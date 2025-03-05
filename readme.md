@@ -43,38 +43,6 @@ pip install -r requirements.txt
 └── readme.md                          # This documentation
 ```
 
-## Key Components
-
-### 1. RealTimeUR5Controller
-- Implements low-level robot control using RTDE interface
-- Features:
-  - Realtime pose control with servoL
-  - Joint position monitoring
-  - Safety-bound enforcement
-  - Asynchronous operation
-
-### 2. CameraManager
-- Manages multiple RealSense cameras
-- Features:
-  - Simultaneous color/depth streaming
-  - Automatic frame synchronization
-  - Robot state-aware data collection
-  - Multi-camera calibration support
-
-### 3. AsyncGripperController
-- Vacuum gripper control interface
-- Supports:
-  - Non-blocking activation/deactivation
-  - Pressure monitoring
-  - Emergency release
-
-### 4. Dataset Builder
-- Constructs robot operation datasets in standard format
-- Processes:
-  - Image normalization
-  - Depth map processing
-  - Pose/joint state recording
-  - Temporal alignment
 
 ## Basic Usage
 Start the robot control script and save the data to the dataset folder.
@@ -91,7 +59,7 @@ tfds build
 ```
 ## Data Collection Protocol
 
-### RawDataset Structure
+### Raw Dataset Structure
 ```
 data/
 ├── task0/
@@ -108,14 +76,12 @@ data/
 └── ...
 ```
 
-### Data Fields (per step)
+### Raw Data Fields (per step)
 - RGB images (3x640x480)
 - Depth maps (1x640x480)
 - End-effector pose (6D vector)
 - Joint positions (6D vector)
 - Gripper state (0 or 1)
-- Action vector (7D)
-- Language instructions
 
 ### Player:
 uesd to play the raw data

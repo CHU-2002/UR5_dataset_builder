@@ -9,6 +9,7 @@ import os
 import threading
 import re
 from .vacuum_gripper import VacuumGripper
+from .spacemouse import SpaceMouseExpert
 # Example camera serial dictionary
 REALSENSE_CAMERAS = {
 
@@ -18,14 +19,14 @@ REALSENSE_CAMERAS = {
     # "side_2": "239722072823"
 }
 
-
+UR5_IP = "192.168.1.60"
 
 DEBUG = False
 class CameraManager:
     """
-    1) 初始化多路 RealSense 摄像头；
-    2) 持续采集 color 与 depth 数据；
-    3) 通过传入的 UR5 与吸盘控制器获取机器人状态，并保存图像及数据。
+    1) Initialize multiple RealSense cameras;
+    2) Continuously collect color and depth data;
+    3) Get robot status through UR5 and gripper controller, and save images and data.
     """
     def __init__(self, camera_map: dict, save_path, UR5_controller=None, gripper_controller=None):
         self.camera_map = camera_map
@@ -371,59 +372,113 @@ class AsyncGripperController:
             pass
 
 def next_dataset_directory(save_path):
-    # 列出所有以 "task" 开头的目录
+    # list all directories starting with "task"
     existing_tasks = [d for d in os.listdir(save_path) if d.startswith("task")]
     
     if not existing_tasks:
         next_task_number = 1
     else:
-        # 提取任务目录中的数字部分并按数字排序
+        # extract the number part from the task directories and sort them
         task_numbers = []
         for task in existing_tasks:
             match = re.match(r"task(\d+)", task)
             if match:
                 task_numbers.append(int(match.group(1)))
         
-        # 获取下一个序号
+        # get the next number
         next_task_number = max(task_numbers) + 1
     
-    # 返回下一个数据集应该存储的目录路径
+    # return the directory path where the next dataset should be stored
     next_dataset_dir = os.path.join(save_path, f"task{next_task_number}")
     return next_dataset_dir
 
 
 
 def main():
-    UR5_IP = "192.168.1.60"
-    SAVE_PATH = "data"
-    
+
+    # 1. Instantiate UR5 and gripper controllers
+    ur5_controller = RealTimeUR5ControllerUsingMoveL(UR5_IP)
+    gripper_controller = AsyncGripperController(UR5_IP)
+    SAVE_PATH = next_dataset_directory(os.path.join(os.path.dirname(__file__), "data"))
+    # 2. Instantiate CameraManager
     camera_manager = CameraManager(
         camera_map=REALSENSE_CAMERAS,
         save_path=SAVE_PATH,
+        UR5_controller=ur5_controller,
+        gripper_controller=gripper_controller
     )
 
+    # 3. Initialize cameras
     camera_manager.init_cameras()
+    # 4. Prepare a thread to run camera_manager.run() for collecting and storing data
     camera_thread = threading.Thread(target=camera_manager.run, daemon=True)
-    camera_thread.start()
+    # camera_thread.start()
+    # 5. Start a simple SpaceMouse control
+    spacemouse = SpaceMouseExpert()  # You need to implement or use a third-party library
+    camera_running = False
+    zero_count = 0
 
+    # Open the gripper initially
+    gripper_controller.control_gripper(close=False, force=100, speed=30)
+
+    gripper_state = False
+    previous_button = False
+
+    # Set an initial robot pose
+    current_pose = [-0.320, -0.060, 0.330, np.pi, 0, 0]
+    ur5_controller.send_pose_to_robot(current_pose)
+    ur5_controller.start_realtime_control(frequency=20)
+    print("[INFO] Start main loop for SpaceMouse + Robot ...")
+    time.sleep(10)
     try:
         while True:
-            color_image = camera_manager.get_latest_frame("side_1")
-            if color_image:
-                print("Camera View", color_image["color"])
-                
-            # 等待 1ms，按 'q' 退出
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+            # Get SpaceMouse movement (action) and buttons
+            action, buttons = spacemouse.get_action()
+            print(f"Spacemouse action: {action}, buttons: {buttons}")
+
+            # Update current_pose
+            for i in range(3):
+                current_pose[i] += action[i] * 0.005
+            # current_pose[4] += action[4] * 0.1
+            # Send new EEF pose
+            ur5_controller.send_pose_to_robot(current_pose)
+
+            # Use button[0] to control gripper
+            if(buttons[0] and not previous_button):
+                gripper_state = not gripper_state
+            gripper_controller.control_gripper(close=gripper_state, force=100, speed=100)
+            previous_button = buttons[0]
+            # Check if there's any movement/button input
+            if any(abs(a) > 1e-5 for a in action) or any(buttons):
+                zero_count = 0
+                if not camera_running:
+                    # Start camera thread
+                    camera_thread.start()
+                    camera_running = True
+                    print("Camera thread started.")
+            # else:
+            #     zero_count += 1
+            #     # If no input for 5 cycles, exit
+            #     if zero_count >= 5:
+            #         if camera_running:
+            #             print("Stopping main loop since no input for 5 cycles.")
+            #         break
+
+            time.sleep(0.1)
 
     except KeyboardInterrupt:
-        print("[INFO] Stopping Camera Manager.")
-
+        print("[INFO] KeyboardInterrupt: stopping main loop.")
     finally:
+        # 6. Stop CameraManager
         camera_manager.stop()
-        camera_thread.join()
-        cv2.destroyAllWindows()
+        if camera_thread.is_alive():
+            camera_thread.join()
 
+        # 7. Disconnect gripper and close UR5 RTDE
+        gripper_controller.disconnect()
+        ur5_controller.close()
+
+        print("[INFO] Main program finished.")
 
 
 
