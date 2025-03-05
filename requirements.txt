@@ -1,0 +1,4 @@
+pyrealsense2>=2.55.1.6486
+opencv-python
+ur_rtde>=1.5.9
+numpy==1.24.3

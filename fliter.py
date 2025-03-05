@@ -31,7 +31,7 @@ def filter_same_pose(steps, eps=1e-9):
             last_pose = pose
     
     if steps and steps[-1] not in filtered:
-        filtered.append(steps[-1])  # 保证最后一帧被保留
+        filtered.append(steps[-1])  # Ensure the last frame is retained
     
     return filtered
 
@@ -50,7 +50,7 @@ def filter_small_displacement(steps):
     
     filtered = [step for step, keep in zip(steps, keep_flags) if keep]
     if steps[-1] not in filtered:
-        filtered.append(steps[-1])  # 确保最后一帧存在
+        filtered.append(steps[-1])  # Ensure the last frame exists
     
     return filtered
 
@@ -66,7 +66,7 @@ def save_filtered_steps(filtered_steps, save_dir):
 def process_one_task(original_data_dir, filtered_data_dir, eps=1e-9):
     steps = load_dataset(original_data_dir)
     if len(steps) == 0:
-        print(f"[WARN] 目录 {original_data_dir} 下未找到 .npy 数据，跳过。")
+        print(f"[WARN] The directory {original_data_dir} does not contain .npy data, skipping.")
         return
     
     print(f"Task dir: {original_data_dir}, total steps: {len(steps)}")

@@ -31,12 +31,12 @@ class Ur5RoboDataset(tfds.core.GeneratorBasedBuilder):
         self._embed = hub.load("https://tfhub.dev/google/universal-sentence-encoder-large/5")
 
     def _info(self) -> tfds.core.DatasetInfo:
-        """返回数据集的元信息 (DatasetInfo)。"""
+        """Return the dataset metadata (DatasetInfo)."""
         return self.dataset_info_from_configs(
             features=tfds.features.FeaturesDict({
                 'steps': tfds.features.Dataset({
                     'observation': tfds.features.FeaturesDict({
-                        # RGB 图像特征
+                        # RGB image features
                         **{
                             key: tfds.features.Image(
                                 shape=(self.MAX_RES, self.MAX_RES, 3),
@@ -45,7 +45,7 @@ class Ur5RoboDataset(tfds.core.GeneratorBasedBuilder):
                                 doc=f'{key} camera RGB observation.'
                             ) for key in ["primary_image", "secondary_image", "wrist_image"]
                         },
-                        # 深度图像特征
+                        # Depth image features
                         **{
                             key: tfds.features.Image(
                                 shape=(self.MAX_RES, self.MAX_RES, 1),
@@ -54,7 +54,7 @@ class Ur5RoboDataset(tfds.core.GeneratorBasedBuilder):
                                 doc=f'{key} depth observation.'
                             ) for key in ["primary_depth", "secondary_depth", "wrist_depth"]
                         },
-                        # 机械臂相关特征
+                        # Robot related features
                         **{
                             'gripper': tfds.features.Scalar(
                                 dtype=np.float32, 
@@ -121,7 +121,7 @@ class Ur5RoboDataset(tfds.core.GeneratorBasedBuilder):
         }
 
     def _generate_examples(self, data_dir):
-        """遍历 data_dir，生成训练数据"""
+        """Traversal data_dir, Generate training data"""
         #print(f"Scanning dataset directory: {data_dir}")
 
         task_folders = sorted(
@@ -138,7 +138,7 @@ class Ur5RoboDataset(tfds.core.GeneratorBasedBuilder):
                     f for f in os.listdir(folder_path)
                     if f.endswith('.npy') and f.startswith('targ')
                 ]
-                # 按数字顺序排序文件名
+            # Sort file names in numerical order
             npy_files.sort(key=lambda fname: int(re.search(r'targ(\d+)\.npy', fname).group(1)))
 
 
@@ -163,18 +163,18 @@ class Ur5RoboDataset(tfds.core.GeneratorBasedBuilder):
                 gripper_val = data_dict.get('gripper', 0)
                 state = np.concatenate([pos_p, [gripper_val]]).astype(np.float32)
 
-            # 计算 action: 默认初始化为 7 维全 0
+                # Calculate action: default initializes to 7-dimensional all 0
                 action = np.zeros((7,), dtype=np.float32)
 
-            # 这里可以根据 j==0 还是 j>0 来决定是否计算 action
+                # Here we can decide whether to calculate action based on j==0 or j>0
                 if npy_name == npy_files[0]:
-                    # 第一个 step 通常没有上一个状态
+                    # The first step usually does not have a previous state
                     pass
                 else:
                     # action = current_state - last_state
                     action = (state - last_state).astype(np.float32)
 
-                    # gripper 的绝对值大于 0.1 就表示开合
+                    # If the absolute value of gripper is greater than 0.1, it means opening and closing
                     if gripper_val > 0.1:
                         action[6] = 1
                     else:
@@ -185,32 +185,32 @@ class Ur5RoboDataset(tfds.core.GeneratorBasedBuilder):
 
 
                 def process_img(img):
-                        """对 RGB 图像进行 resize，并保证返回 (H, W, 3)。"""
+                        """Resize the RGB image and ensure the return (H, W, 3)."""
                         if img is None:
                             return None
-                        # 如果原图是 (H, W) 或 (H, W, 1) 需要先转成三通道
+                        # If the original image is (H, W) or (H, W, 1), it needs to be converted to three channels
                         if img.ndim == 2:
-                            # 灰度转伪 RGB
+                            # Convert grayscale to pseudo RGB
                             img = np.stack([img, img, img], axis=-1)
                         elif img.ndim == 3 and img.shape[-1] == 1:
-                            # 同样视为灰度
+                            # Same as grayscale
                             img = np.concatenate([img, img, img], axis=-1)
                         # BGR -> RGB
                         img = img[..., ::-1]  # BGR->RGB
                         img = cv2.resize(img, (self.MAX_RES, self.MAX_RES))  # -> (H, W, 3)
-                        # 如果你想 BGR -> RGB 可以用 img = img[..., ::-1]
+                        # If you want to convert BGR -> RGB, you can use img = img[..., ::-1]
                         return img.astype(np.uint8)
 
                 def process_depth(depth_img):
-                    """对深度图进行 resize，返回 (H, W, 1)"""
+                    """Resize the depth image and return (H, W, 1)."""
                     if depth_img is None:
                         return None
-                    # 先 squeeze 到 (H, W)
+                    # First squeeze to (H, W)
                     if depth_img.ndim == 3 and depth_img.shape[-1] == 1:
                         depth_img = np.squeeze(depth_img, axis=-1)
                     # resize
                     depth_img = cv2.resize(depth_img, (self.MAX_RES, self.MAX_RES))
-                    # 扩展成 (H, W, 1)
+                    # Expand to (H, W, 1)
                     depth_img = depth_img[..., np.newaxis].astype(np.uint16)
                     return depth_img
 
@@ -241,7 +241,7 @@ class Ur5RoboDataset(tfds.core.GeneratorBasedBuilder):
             yield episode_id, {
                         'steps': steps_data,
                         'episode_metadata': {
-                            # 这里与 _info 中的定义对应
+                            # This corresponds to the definition in _info
                             'file_path': os.path.join(folder_path, npy_name),
                         }
                     }

@@ -8,13 +8,13 @@ import numpy as np
 import os
 import threading
 import re
-from vacuum_gripper import VacuumGripper
+from .vacuum_gripper import VacuumGripper
 # Example camera serial dictionary
 REALSENSE_CAMERAS = {
 
     "side_1": "218622277783",#405
-    "side_2": "819612070593",#435
-    "wrist_1": "130322272869" #D405
+    # "side_2": "819612070593",#435
+    # "wrist_1": "130322272869" #D405
     # "side_2": "239722072823"
 }
 
@@ -23,50 +23,21 @@ REALSENSE_CAMERAS = {
 DEBUG = False
 class CameraManager:
     """
-    Responsibilities:
-      1) Initialize multiple RealSense cameras and fetch images
-      2) Collect color/depth images at a fixed frequency (e.g., ~5Hz) for visualization
-      3) Use a custom RealTimeUR5Controller to get robot end-effector pose and joint positions
-      4) Save images and robot data to local disk
-
-    Example usage:
-        camera_map = {
-            "front": "123456789012",  # camera name -> serial
-            "side":  "987654321098",
-        }
-        manager = CameraManager(
-            robot_ip="192.168.1.60",
-            camera_map=camera_map,
-            save_path="data"
-        )
-        manager.init_cameras()
-        manager.run()
+    1) 初始化多路 RealSense 摄像头；
+    2) 持续采集 color 与 depth 数据；
+    3) 通过传入的 UR5 与吸盘控制器获取机器人状态，并保存图像及数据。
     """
-
-    def __init__(self, camera_map: dict, save_path,
-                 UR5_controller=None, gripper_controller=None):
-        """
-        :param camera_map:     dict {camera_name: RealSense device serial}
-        :param save_path:      Directory for saving data
-        :param UR5_controller: Instance of RealTimeUR5Controller (optional)
-        :param gripper_controller: Instance of AsyncGripperController or similar (optional)
-        """
+    def __init__(self, camera_map: dict, save_path, UR5_controller=None, gripper_controller=None):
         self.camera_map = camera_map
         self.save_path = save_path
-
-        self.pipelines = {}   # Holds camera_name -> rs.pipeline()
-        self.index = 0        # Data saving counter
-
-        # Example usage: RealTimeUR5Controller to get robot pose & joints
+        self.pipelines = {}   # camera_name -> rs.pipeline() 对象
+        self.index = 0        # 保存数据的计数器
+        self.latest_frames = {}  # {camera_name: {"color": ..., "depth": ...}, ...}
         self.ur5_controller = UR5_controller
         self.gripper_controller = gripper_controller
 
     def init_cameras(self):
-        """
-        Initialize the RealSense camera pipelines.
-        """
         os.makedirs(self.save_path, exist_ok=True)
-
         for name, serial in self.camera_map.items():
             try:
                 pipeline = rs.pipeline()
@@ -78,54 +49,36 @@ class CameraManager:
                 self.pipelines[name] = pipeline
                 print(f"Camera [{name}] with serial={serial} started successfully.")
             except Exception as e:
-                print(f"Error while starting camera [{name}] serial={serial}: {e}")
+                print(f"Error starting camera [{name}] with serial={serial}: {e}")
                 self.pipelines[name] = None
 
     def run(self):
-        """
-        Main loop:
-        Continuously read frames from cameras, retrieve robot data, visualize & save them.
-        Press 'q' to exit.
-        """
         try:
             while True:
-                # Collect data from all cameras
                 all_imgs = []
                 for name, pipeline in self.pipelines.items():
                     if pipeline is None:
                         continue
-
                     frames = pipeline.wait_for_frames()
                     color_frame = frames.get_color_frame()
                     depth_frame = frames.get_depth_frame()
-
                     if not color_frame or not depth_frame:
                         continue
-
                     color_image = np.asanyarray(color_frame.get_data())
                     depth_image = np.asanyarray(depth_frame.get_data())
-
-                    # For demonstration: only store the first camera's color/depth
-                    
+                    self.latest_frames[name] = {"color": color_image, "depth": depth_image}
                     all_imgs.append(color_image)
                     all_imgs.append(depth_image)
-
-                    # Show color image in a window
                     cv2.imshow(f"Camera {name}", color_image)
-
-                # Retrieve current robot pose & joints
                 if self.ur5_controller:
                     pos, joint = self.ur5_controller.get_robot_pose_and_joints()
                 else:
-                    pos = [0.3, -0.2, 0.2, 0, 0, 0]  # default if no UR5 controller
+                    pos = [0.3, -0.2, 0.2, 0, 0, 0]
                     joint = [0.0] * 6
-                # Retrieve gripper state (could be 0/1 or other logic)
                 if self.gripper_controller:
                     gripper_state = self.gripper_controller.get_gripper_state()
                 else:
-                    gripper_state = 0  # default if no gripper controller
-
-                # If we have at least one camera's color+depth, save the data
+                    gripper_state = 0
                 if len(all_imgs) >= 2:
                     self._save_data(
                         index=self.index,
@@ -136,91 +89,45 @@ class CameraManager:
                     )
                     print(f"[INFO] Saved data at index={self.index}")
                     self.index += 1
-
-                # Press 'q' to exit
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     print("[INFO] Exiting camera loop.")
                     break
-
-                # ~5Hz => 0.2s
                 time.sleep(0.2)
-
         except Exception as e:
-            print(f"[ERROR] Camera streaming loop exception: {e}")
+            print(f"[ERROR] Exception in camera streaming loop: {e}")
         finally:
             self.stop()
 
-    def _save_data(self, index, joint, pos, imgs, gripper):
-        """
-        Save the current frame data to disk, including color/depth images and robot info.
-        imgs: [primary_color_image, primary_depth_image,
-            secondary_color_image, secondary_depth_image,
-            wrist_color_image, wrist_depth_image]
-        """
-        # Initialize placeholders for images
-        primary_color_img = primary_depth_img = None
-        secondary_color_img = secondary_depth_img = None
-        wrist_color_img = wrist_depth_img = None
+    def get_latest_frame(self, camera_name: str = None):
+        if camera_name is None:
+            if not self.latest_frames:
+                return None
+            return next(iter(self.latest_frames.values()))
+        else:
+            return self.latest_frames.get(camera_name, None)
 
-        # Assign images based on length of imgs
+    def _save_data(self, index, joint, pos, imgs, gripper):
+        primary_color_img = primary_depth_img = None
         if len(imgs) >= 2:
             primary_color_img = imgs[0]
             primary_depth_img = imgs[1]
-        if len(imgs) >= 4:
-            secondary_color_img = imgs[2]
-            secondary_depth_img = imgs[3]
-        if len(imgs) >= 6:
-            wrist_color_img = imgs[4]
-            wrist_depth_img = imgs[5]
-
-        # Pack into a dict
         data = {
             'joint': np.array(joint, dtype=np.float32),
-            'pose':  np.array(pos,   dtype=np.float32),
+            'pose':  np.array(pos, dtype=np.float32),
             'primary_image': primary_color_img,
             'primary_depth_image': primary_depth_img,
-            'secondary_image': secondary_color_img,
-            'secondary_depth_image': secondary_depth_img,
-            'wrist_image': wrist_color_img,
-            'wrist_depth_image': wrist_depth_img,
             'gripper': gripper
         }
-
-        # Save images for each camera if available
         if primary_color_img is not None:
             primary_color_path = os.path.join(self.save_path, f"primary_{index}.jpg")
-            primary_depth_path = os.path.join(self.save_path, f"primary_depth_{index}.jpg")
             cv2.imwrite(primary_color_path, primary_color_img)
-            if DEBUG:
-                cv2.imwrite(primary_depth_path, primary_depth_img)
-
-        if secondary_color_img is not None:
-            secondary_color_path = os.path.join(self.save_path, f"secondary_{index}.jpg")
-            secondary_depth_path = os.path.join(self.save_path, f"secondary_depth_{index}.jpg")
-            if DEBUG:
-                cv2.imwrite(secondary_color_path, secondary_color_img)
-                cv2.imwrite(secondary_depth_path, secondary_depth_img)
-
-        if wrist_color_img is not None:
-            wrist_color_path = os.path.join(self.save_path, f"wrist_{index}.jpg")
-            wrist_depth_path = os.path.join(self.save_path, f"wrist_depth_{index}.jpg")
-            if DEBUG:
-                cv2.imwrite(wrist_color_path, wrist_color_img)
-                cv2.imwrite(wrist_depth_path, wrist_depth_img)
-
-        # Save as .npy
         np.save(os.path.join(self.save_path, f"targ{index}.npy"), data)
 
     def stop(self):
-        """
-        Stop all camera streams, close OpenCV windows,
-        and close the UR5 controller connection if needed.
-        """
         for name, pipeline in self.pipelines.items():
             if pipeline is not None:
                 pipeline.stop()
         cv2.destroyAllWindows()
-
         print("[INFO] CameraManager stopped.")
 
 
@@ -292,7 +199,7 @@ class RealTimeUR5ControllerUsingMoveL:
             # If the user changes self._target_pose in between calls, it might
             # interrupt the previous move.
             try:
-                print("pose",self._target_pose)
+                # print("pose",self._target_pose)
                 self.rtde_control.moveL(
                     self._target_pose,
                     speed=self._speed,
@@ -487,90 +394,36 @@ def next_dataset_directory(save_path):
 
 
 def main():
-
-    # 1. Instantiate UR5 and gripper controllers
-    ur5_controller = RealTimeUR5ControllerUsingMoveL(UR5_IP)
-    gripper_controller = AsyncGripperController(UR5_IP)
-
-    # 2. Instantiate CameraManager
+    UR5_IP = "192.168.1.60"
+    SAVE_PATH = "data"
+    
     camera_manager = CameraManager(
         camera_map=REALSENSE_CAMERAS,
         save_path=SAVE_PATH,
-        UR5_controller=ur5_controller,
-        gripper_controller=gripper_controller
     )
 
-    # 3. Initialize cameras
     camera_manager.init_cameras()
-    # 4. Prepare a thread to run camera_manager.run() for collecting and storing data
     camera_thread = threading.Thread(target=camera_manager.run, daemon=True)
-    # camera_thread.start()
-    # 5. Start a simple SpaceMouse control
-    spacemouse = SpaceMouseExpert()  # You need to implement or use a third-party library
-    camera_running = False
-    zero_count = 0
+    camera_thread.start()
 
-    # Open the gripper initially
-    gripper_controller.control_gripper(close=False, force=100, speed=30)
-
-    gripper_state = False
-    previous_button = False
-
-    # Set an initial robot pose
-    current_pose = [-0.320, -0.060, 0.330, np.pi, 0, 0]
-    ur5_controller.send_pose_to_robot(current_pose)
-    ur5_controller.start_realtime_control(frequency=20)
-    print("[INFO] Start main loop for SpaceMouse + Robot ...")
-    time.sleep(10)
     try:
         while True:
-            # Get SpaceMouse movement (action) and buttons
-            action, buttons = spacemouse.get_action()
-            print(f"Spacemouse action: {action}, buttons: {buttons}")
-
-            # Update current_pose
-            for i in range(3):
-                current_pose[i] += action[i] * 0.005
-            # current_pose[4] += action[4] * 0.1
-            # Send new EEF pose
-            ur5_controller.send_pose_to_robot(current_pose)
-
-            # Use button[0] to control gripper
-            if(buttons[0] and not previous_button):
-                gripper_state = not gripper_state
-            gripper_controller.control_gripper(close=gripper_state, force=100, speed=100)
-            previous_button = buttons[0]
-            # Check if there's any movement/button input
-            if any(abs(a) > 1e-5 for a in action) or any(buttons):
-                zero_count = 0
-                if not camera_running:
-                    # Start camera thread
-                    camera_thread.start()
-                    camera_running = True
-                    print("Camera thread started.")
-            # else:
-            #     zero_count += 1
-            #     # If no input for 5 cycles, exit
-            #     if zero_count >= 5:
-            #         if camera_running:
-            #             print("Stopping main loop since no input for 5 cycles.")
-            #         break
-
-            time.sleep(0.1)
+            color_image = camera_manager.get_latest_frame("side_1")
+            if color_image:
+                print("Camera View", color_image["color"])
+                
+            # 等待 1ms，按 'q' 退出
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
 
     except KeyboardInterrupt:
-        print("[INFO] KeyboardInterrupt: stopping main loop.")
+        print("[INFO] Stopping Camera Manager.")
+
     finally:
-        # 6. Stop CameraManager
         camera_manager.stop()
-        if camera_thread.is_alive():
-            camera_thread.join()
+        camera_thread.join()
+        cv2.destroyAllWindows()
 
-        # 7. Disconnect gripper and close UR5 RTDE
-        gripper_controller.disconnect()
-        ur5_controller.close()
-
-        print("[INFO] Main program finished.")
 
 
 
